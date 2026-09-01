@@ -1,0 +1,4 @@
+aiogram[proxy]>=3.7,<4
+requests>=2.31
+python-dotenv>=1.0
+matplotlib>=3.7

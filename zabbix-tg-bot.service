@@ -1,0 +1,30 @@
+# systemd-юнит для запуска бота системным python3 (без venv)
+# Положить в /etc/systemd/system/zabbix-tg-bot.service
+#
+#   sudo cp zabbix-tg-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now zabbix-tg-bot
+#   journalctl -u zabbix-tg-bot -f      # смотреть логи
+#
+# Перед запуском сервиса остановите ручной запуск бота (Ctrl+C в терминале),
+# иначе два процесса будут конфликтовать из-за getUpdates.
+
+[Unit]
+Description=Zabbix Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# под кем запускать (файлы проекта должны принадлежать этому пользователю:
+#  chown -R vanessa:vanessa /home/vanessa/zabbix-tg-bot)
+User=vanessa
+Group=vanessa
+WorkingDirectory=/home/vanessa/zabbix-tg-bot
+ExecStart=/usr/bin/python3 bot.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
