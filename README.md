@@ -47,24 +47,33 @@ python bot.py
 
 
  1. Зависимости системы и клон
+ ```bash
 sudo apt install -y git python3 python3-venv
 git clone https://github.com/m0xvi/tgbzbx.git
 cd tgbzbx
+```
 
  2. Первый запуск — создаст .venv, поставит зависимости, создаст .env
+
+```bash
 ./install.sh --no-systemd
+```
 
  3. Заполнить конфиг
+ ```bash
 nano .env
+```
 
  4. Финальная установка: проверит всё и поставит systemd-сервис
+ ```bash
 sudo ./install.sh
+```
 
 Скрипт сам: создаст venv, поставит зависимости, скопирует env.example → .env (учёл, что в репо он без точки), подскажет какие поля заполнить, прогонит check_proxy.py и сгенерирует systemd-юнит с правильными путями и пользователем (не нужно править vanessa вручную). Протестировал оба сценария — работает.
 
 ### Если без скрипта (вручную)
 
-
+```bash
 git clone https://github.com/m0xvi/tgbzbx.git && cd tgbzbx
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
@@ -72,6 +81,7 @@ cp env.example .env && nano .env
 .venv/bin/python check_proxy.py     # проверка
 # systemd: поправить в zabbix-tg-bot.service User и пути, ExecStart = /path/.venv/bin/python bot.py
 sudo cp zabbix-tg-bot.service /etc/systemd/system/ && sudo systemctl enable --now zabbix-tg-bot
+```
 
 ## Настройка Zabbix (важно!)
 
