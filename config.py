@@ -53,4 +53,9 @@ config = SimpleNamespace(
     notify_enabled=_bool(os.getenv("NOTIFY_ENABLED"), True),
     notify_min_severity=max(0, min(5, int(os.getenv("NOTIFY_MIN_SEVERITY", "3")))),
     notify_poll=max(20, int(os.getenv("NOTIFY_POLL_SECONDS", "60"))),
+    # ⚙️ Опасные действия (/admin: рестарт Zabbix, перезагрузка сервера).
+    # Пусто — функция отключена. Нужен также sudo (см. README).
+    admin_users=_parse_users(os.getenv("ADMIN_USERS", "")),
+    # Имя systemd-сервиса Zabbix-сервера (для кнопки перезапуска)
+    zabbix_service=os.getenv("ZABBIX_SERVICE_NAME", "zabbix-server"),
 )

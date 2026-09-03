@@ -9,9 +9,11 @@ Zabbix 6.0 Telegram Bot
 from __future__ import annotations
 
 import asyncio
+import getpass
 import html
 import logging
 import os
+import subprocess
 import tempfile
 import time
 from datetime import datetime
@@ -568,7 +570,8 @@ async def cmd_start(message: Message):
         "<b>Действия:</b>\n"
         "/addhost — добавить узел\n"
         "/maintenance — обслуживания: создать / завершить ⏹\n"
-        "/notify on|off|0–5 — push-уведомления о новых проблемах\n\n"
+        "/notify on|off|0–5 — push-уведомления о новых проблемах\n"
+        "/admin — ⚙️ перезапуск Zabbix-сервера и сервера (только ADMIN_USERS)\n\n"
         "/cancel — отменить текущий диалог",
         reply_markup=kb.as_markup(),
     )
@@ -633,6 +636,10 @@ async def cmd_status(message: Message):
                      for s in ("5", "4", "3", "2", "1") if s in counts)
     active_m = sum(1 for m in maints
                    if int(m["active_since"]) <= now <= int(m["active_till"]))
+    kb = None
+    if is_admin(getattr(message.from_user, "id", None)):
+        kb = InlineKeyboardBuilder().button(
+            text="⚙️ Сервер", callback_data="adm:menu").as_markup()
     await message.answer(
         "📊 <b>Статус Zabbix</b>\n\n"
         f"Версия: <b>{esc(version)}</b>\n"
@@ -642,7 +649,8 @@ async def cmd_status(message: Message):
         + (f" ({badge})" if badge else "")
         + f" · за 24 ч: <b>{recent24}</b>"
         + (f" · не подтв.: <b>{unacked}</b>" if unacked else "") + "\n"
-        f"🔧 Активных обслуживаний: {active_m}")
+        f"🔧 Активных обслуживаний: {active_m}",
+        reply_markup=kb)
 
 
 # --------------------------------------------------------------------------- /addhost (FSM)
@@ -1488,6 +1496,219 @@ async def cb_host_delete_confirm(cb: CallbackQuery):
         kb.as_markup())
 
 
+# ------------------------------------------------------------------- управление сервером (/admin)
+
+class AdminReboot(StatesGroup):
+    ask = State()
+
+
+_adm_last = {"rz": 0.0, "rb": 0.0}   # защита от даблклика (cooldown, сек)
+
+
+def is_admin(uid: int | None) -> bool:
+    return bool(config.admin_users) and uid in config.admin_users
+
+
+def _gate_admin(cb_or_msg) -> bool:
+    """Есть ли у отправителя доступ к /admin-действиям."""
+    user = getattr(cb_or_msg, "from_user", None)
+    return is_admin(getattr(user, "id", None))
+
+
+def uptime_str() -> str:
+    try:
+        s = float(open("/proc/uptime").read().split()[0])
+        d, rem = divmod(int(s), 86400)
+        if d:
+            return f"{d} д {rem // 3600} ч"
+        return f"{rem // 3600} ч {rem % 3600 // 60} мин"
+    except Exception:
+        return "?"
+
+
+def sudoers_hint() -> str:
+    """Готовый текст для /etc/sudoers.d/zabbix-tg-bot под текущего пользователя."""
+    user = getpass.getuser() or "botuser"
+    svc = config.zabbix_service
+    return (f"{user} ALL=(root) NOPASSWD: /usr/bin/systemctl restart {svc}, "
+            f"/bin/systemctl restart {svc}, /sbin/reboot, /usr/sbin/reboot")
+
+
+def run_root(variants: list[list[str]]) -> tuple[bool, str]:
+    """Выполняет первую сработавшую команду из вариантов (sudo -n, без пароля).
+    Возвращает (успех, вывод/текст ошибки)."""
+    last = ""
+    for cmd in variants:
+        try:
+            cp = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            if cp.returncode == 0:
+                return True, (cp.stdout or "").strip()
+            last = (cp.stderr or cp.stdout or f"код выхода {cp.returncode}").strip()
+        except FileNotFoundError:
+            last = f"команда не найдена: {cmd[0]}"
+        except subprocess.TimeoutExpired:
+            last = "таймаут выполнения"
+    return False, last
+
+
+def restart_zabbix_cmds() -> list[list[str]]:
+    svc = config.zabbix_service
+    return [["sudo", "-n", p, "restart", svc]
+            for p in ("/usr/bin/systemctl", "/bin/systemctl")]
+
+
+def reboot_cmds() -> list[list[str]]:
+    return [["sudo", "-n", p] for p in ("/sbin/reboot", "/usr/sbin/reboot")]
+
+
+async def wait_zabbix_up(timeout: int = 90) -> tuple[str | None, int]:
+    """Ждём, пока Zabbix API снова ответит. → (версия, секунд)."""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        try:
+            v = await asyncio.to_thread(zbx.get_api_version)
+            if v:
+                return v, int(time.time() - t0)
+        except Exception:
+            pass
+        await asyncio.sleep(3)
+    return None, int(time.time() - t0)
+
+
+def render_admin_menu() -> tuple[str, object]:
+    host = os.uname().nodename
+    try:
+        load = " ".join(f"{x:.2f}" for x in os.getloadavg())
+    except Exception:
+        load = "?"
+    svc = config.zabbix_service
+    text = ("⚙️ <b>Управление сервером</b>\n\n"
+            f"Хост: <b>{esc(host)}</b> <i>(машина, где запущен бот)</i>\n"
+            f"Uptime: {uptime_str()} · load: {load}\n"
+            f"Сервис Zabbix: <code>{esc(svc)}</code>\n\n"
+            "<i>Действия выполняются на этом хосте через sudo</i>")
+    kb = InlineKeyboardBuilder()
+    kb.button(text=f"🔁 Перезапустить {svc}", callback_data="adm:rz")
+    kb.button(text="⏻ Перезагрузить сервер", callback_data="adm:rb")
+    kb.button(text="⟳ Обновить", callback_data="adm:menu")
+    kb.button(text="⬅️ Закрыть", callback_data="adm:close")
+    kb.adjust(1, 1, 2)
+    return text, kb.as_markup()
+
+
+@router.message(Command("admin"))
+async def cmd_admin(message: Message):
+    if not _gate_admin(message):
+        return await message.answer(
+            "⛔️ Раздел отключён или нет доступа.\n"
+            "<i>Задайте свой Telegram ID в ADMIN_USERS (.env), "
+            "чтобы включить управление сервером.</i>")
+    text, kb = render_admin_menu()
+    await message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("adm:"))
+async def cb_admin(cb: CallbackQuery, state: FSMContext):
+    if not _gate_admin(cb):
+        return await cb.answer("⛔️ Недоступно (нет в ADMIN_USERS)", show_alert=True)
+    action = cb.data.split(":")[1]
+
+    if action == "menu":
+        await cb.answer()
+        return await edit_or_answer(cb, *render_admin_menu())
+
+    if action == "close":
+        await cb.answer()
+        try:
+            await cb.message.delete()
+        except Exception:
+            pass
+        return
+
+    if action == "rz":  # подтверждение рестарта Zabbix
+        await cb.answer()
+        kb = InlineKeyboardBuilder()
+        kb.button(text="✅ Да, перезапустить", callback_data="adm:rzok")
+        kb.button(text="❌ Отмена", callback_data="adm:menu")
+        kb.adjust(2)
+        return await edit_or_answer(
+            cb,
+            f"⚠️ Перезапустить <b>{esc(config.zabbix_service)}</b>?\n\n"
+            f"Сбор данных прервётся на ~30–60 сек, некоторые триггеры могут "
+            f"сработать повторно. После рестарта бот сам проверит, что API "
+            f"поднялся, и сообщит.", kb.as_markup())
+
+    if action == "rzok":  # сам рестарт Zabbix + ожидание API
+        if time.time() - _adm_last["rz"] < 90:
+            return await cb.answer("Уже запускалось недавно — подождите",
+                                   show_alert=True)
+        _adm_last["rz"] = time.time()
+        await cb.answer("Перезапускаю…")
+        await edit_or_answer(cb, f"🔁 <b>Перезапускаю {esc(config.zabbix_service)}…</b>")
+        ok, out = await asyncio.to_thread(run_root, restart_zabbix_cmds())
+        if not ok:
+            hint = ("sudo требует пароль или команда не разрешена.\n"
+                    "Добавьте в <code>/etc/sudoers.d/zabbix-tg-bot</code> "
+                    "(создать: <code>sudo visudo -f /etc/sudoers.d/zabbix-tg-bot</code>):\n"
+                    f"<code>{esc(sudoers_hint())}</code>")
+            return await cb.message.answer(
+                f"❌ Не удалось перезапустить: <code>{esc(out[:200])}</code>\n\n{hint}")
+        version, secs = await wait_zabbix_up()
+        if version:
+            await cb.message.answer(
+                f"✅ <b>{esc(config.zabbix_service)}</b> перезапущен.\n"
+                f"API отвечает (версия {esc(version)}) — поднялся за {secs} сек.")
+        else:
+            await cb.message.answer(
+                f"⚠️ Команда выполнена, но API не ответил за 90 сек.\n"
+                f"Проверьте вручную: <code>systemctl status "
+                f"{esc(config.zabbix_service)}</code>")
+
+    if action == "rb":  # перезагрузка сервера — шаг 1
+        await cb.answer()
+        kb = InlineKeyboardBuilder()
+        kb.button(text="▶️ Продолжить", callback_data="adm:rbgo")
+        kb.button(text="❌ Отмена", callback_data="adm:menu")
+        kb.adjust(2)
+        return await edit_or_answer(
+            cb,
+            f"⏻ <b>Перезагрузить сервер {esc(os.uname().nodename)}?</b>\n\n"
+            f"• Бот остановится вместе с сервером и вернётся после загрузки "
+            f"(обычно 1–3 мин, поднимет его systemd)\n"
+            f"• Все процессы на сервере будут прерваны\n\n"
+            f"Для подтверждения затем потребуется ввести слово "
+            f"<code>перезагрузка</code>.", kb.as_markup())
+
+    if action == "rbgo":  # шаг 2: ввод слова
+        await state.set_state(AdminReboot.ask)
+        await cb.answer()
+        return await edit_or_answer(
+            cb,
+            "⏻ Для подтверждения перезагрузки отправьте сообщение со словом:\n"
+            "<code>перезагрузка</code>\n\n"
+            "<i>/cancel — отменить</i>")
+
+
+@router.message(AdminReboot.ask)
+async def admin_reboot_confirm(message: Message, state: FSMContext):
+    word = (message.text or "").strip().lower()
+    if word not in ("перезагрузка", "reboot"):
+        return await message.answer(
+            "❌ Не то слово. Введите <code>перезагрузка</code> или /cancel")
+    await state.clear()
+    if time.time() - _adm_last["rb"] < 120:
+        return await message.answer("Перезагрузка уже запрашивалась недавно.")
+    _adm_last["rb"] = time.time()
+    host = os.uname().nodename
+    try:
+        await message.answer(
+            f"⏻ <b>Перезагружаю сервер {esc(host)}…</b>\n"
+            f"Бот вернётся автоматически через 1–3 мин (systemd).")
+    except Exception:
+        pass
+    await asyncio.to_thread(run_root, reboot_cmds())
+
+
 # ------------------------------------------------------------------- уведомления о проблемах
 
 notify_state = {"enabled": config.notify_enabled,
@@ -1665,6 +1886,7 @@ async def main():
         BotCommand(command="graph", description="📈 График метрики"),
         BotCommand(command="latest", description="📊 Последние данные"),
         BotCommand(command="notify", description="🔔 Уведомления о проблемах"),
+        BotCommand(command="admin", description="⚙️ Рестарт Zabbix / сервера"),
         BotCommand(command="cancel", description="❌ Отменить диалог"),
     ])
     await bot.delete_webhook(drop_pending_updates=True)

@@ -22,6 +22,7 @@ Telegram ←→ Bot API ←→ этот бот (Python, aiogram 3) ←→ Zabbix
 | `/graph` | График любой числовой метрики за 1 / 3 / 24 ч (картинка PNG) |
 | `/latest` | Последние значения метрик узла |
 | `/notify on/off/0-5` | 🔔 Push-уведомления о новых проблемах всем пользователям из `ALLOWED_USERS` (порог важности настраивается) |
+| `/admin` | ⚙️ **Рестарт Zabbix-сервера и перезагрузка сервера** — только для `ADMIN_USERS`, через sudo (см. раздел ниже) |
 | `/cancel` | Прервать диалог |
 
 Безопасность: белый список Telegram ID (`ALLOWED_USERS`), бот отвечает только им.
@@ -41,46 +42,6 @@ pip install -r requirements.txt
 cp .env.example .env && nano .env   # заполнить (см. ниже)
 python check_proxy.py               # ← проверит .env, прокси, Telegram и Zabbix
 python bot.py
-```
-
-### Установка на новой машине (с install.sh)
-
-
- 1. Зависимости системы и клон
- ```bash
-sudo apt install -y git python3 python3-venv
-git clone https://github.com/m0xvi/tgbzbx.git
-cd tgbzbx
-```
-
- 2. Первый запуск — создаст .venv, поставит зависимости, создаст .env
-
-```bash
-./install.sh --no-systemd
-```
-
- 3. Заполнить конфиг
- ```bash
-nano .env
-```
-
- 4. Финальная установка: проверит всё и поставит systemd-сервис
- ```bash
-sudo ./install.sh
-```
-
-Скрипт сам: создаст venv, поставит зависимости, скопирует env.example → .env (учёл, что в репо он без точки), подскажет какие поля заполнить, прогонит check_proxy.py и сгенерирует systemd-юнит с правильными путями и пользователем (не нужно править vanessa вручную). Протестировал оба сценария — работает.
-
-### Если без скрипта (вручную)
-
-```bash
-git clone https://github.com/m0xvi/tgbzbx.git && cd tgbzbx
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cp env.example .env && nano .env
-.venv/bin/python check_proxy.py     # проверка
-# systemd: поправить в zabbix-tg-bot.service User и пути, ExecStart = /path/.venv/bin/python bot.py
-sudo cp zabbix-tg-bot.service /etc/systemd/system/ && sudo systemctl enable --now zabbix-tg-bot
 ```
 
 ## Настройка Zabbix (важно!)
@@ -188,6 +149,38 @@ python check_proxy.py
 | `NOTIFY_ENABLED` | рассылать новые проблемы (`true`/`false`) |
 | `NOTIFY_MIN_SEVERITY` | порог важности уведомлений 0–5 (по умолчанию 3 — средняя и выше) |
 | `NOTIFY_POLL_SECONDS` | период опроса Zabbix в секундах (по умолчанию 60) |
+| `ADMIN_USERS` | Telegram ID, которым доступен `/admin` (рестарт Zabbix/сервера). Пусто — отключено |
+| `ZABBIX_SERVICE_NAME` | имя systemd-сервиса Zabbix (по умолчанию `zabbix-server`) |
+
+## ⚙️ Рестарт Zabbix и сервера (/admin)
+
+Опасные действия вынесены в отдельный раздел `/admin` (или кнопка «⚙️ Сервер»
+в `/status`) и доступны **только** перечисленным в `ADMIN_USERS`.
+
+Бот выполняет их через `sudo -n`, поэтому нужно разрешить ему ровно две
+команды без пароля — на машине, где запущен бот
+(подставьте своего пользователя вместо `vanessa`):
+
+```bash
+sudo visudo -f /etc/sudoers.d/zabbix-tg-bot
+# одна строка:
+vanessa ALL=(root) NOPASSWD: /usr/bin/systemctl restart zabbix-server, /bin/systemctl restart zabbix-server, /sbin/reboot, /usr/sbin/reboot
+```
+
+Если сервис называется иначе (см. `systemctl status zabbix-server`) — поправьте
+`ZABBIX_SERVICE_NAME` в `.env` и в строке sudoers. Больше ничего бот с sudo
+сделать не может — разрешения выданы только на эти команды.
+
+- 🔁 **Перезапуск Zabbix**: после рестарта бот сам опрашивает API до 90 сек и
+  присылает «✅ поднялся за N сек». При ошибке sudo — пришлёт готовую строку
+  для sudoers.
+- ⏻ **Перезагрузка сервера**: двойное подтверждение — кнопка, затем ввод слова
+  «перезагрузка» (защита от случайного нажатия). Бот уйдёт в перезагрузку
+  вместе с сервером и вернётся автоматически (systemd, `Restart=always`).
+
+⚠️ Действия выполняются на машине, **где запущен бот** (хост виден в меню
+`/admin`). Если бот и Zabbix на разных машинах — рестарт подействует на машину
+бота, не на Zabbix.
 
 ## Уведомления: что упало и что поднялось
 
