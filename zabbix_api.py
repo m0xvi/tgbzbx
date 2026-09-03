@@ -1,10 +1,12 @@
 """
-Тонкий клиент Zabbix 6.0 LTS HTTP API (JSON-RPC).
+Тонкий клиент Zabbix HTTP API (JSON-RPC). Совместим с Zabbix 5.4+ —
+проверено на 6.0 LTS и 7.2/7.4.
 
-Особенности 6.0:
-  * вход — user.login с параметрами username/password, возвращает токен;
-  * токен передаётся в поле "auth" тела запроса (в 6.4+ это уже deprecated,
-    но для 6.0 — штатный способ);
+Аутентификация:
+  * вход — user.login (username/password), возвращает токен сессии;
+  * токен передаётся в заголовке Authorization: Bearer <token> —
+    работает во всех поддерживаемых версиях (передача "auth" в теле
+    запроса удалена начиная с Zabbix 7.2);
   * при истечении сессии клиент сам перелогинивается и повторяет запрос.
 """
 from __future__ import annotations
@@ -52,10 +54,11 @@ class ZabbixAPI:
 
         self._id += 1
         payload = {"jsonrpc": "2.0", "method": method, "params": params, "id": self._id}
+        headers = {}
         if with_auth:
-            payload["auth"] = self.token
+            headers["Authorization"] = f"Bearer {self.token}"
 
-        resp = self._http.post(self.api_url, json=payload,
+        resp = self._http.post(self.api_url, json=payload, headers=headers,
                                timeout=self.timeout, verify=self.verify_ssl)
 
         if resp.status_code == 412:
@@ -75,8 +78,11 @@ class ZabbixAPI:
             err = data["error"]
             msg = err.get("data") or err.get("message") or "неизвестная ошибка"
             # сессия истекла — перелогиниваемся один раз и повторяем запрос
-            if with_auth and allow_relogin and any(
-                s in msg for s in ("Not authorized", "re-login", "Session terminated")
+            if with_auth and allow_relogin and (
+                resp.status_code == 401
+                or any(s in msg for s in ("Not authorized", "re-login",
+                                          "Session terminated",
+                                          "session was not found"))
             ):
                 self.login()
                 return self._call(method, params, with_auth=True, allow_relogin=False)

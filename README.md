@@ -1,7 +1,9 @@
-# Zabbix Telegram Bot (Zabbix 6.0 LTS)
+# Zabbix Telegram Bot (Zabbix 6.0 LTS / 7.x)
 
 Бот для управления Zabbix через Telegram: просмотр и **создание узлов**, проблемы
 с подтверждением, режим обслуживания, графики метрик и последние значения.
+Совместим с Zabbix 5.4+ (проверено на 6.0 LTS и 7.2+) — аутентификация через
+заголовок `Authorization: Bearer`.
 
 ```
 Telegram ←→ Bot API ←→ этот бот (Python, aiogram 3) ←→ Zabbix HTTP API (JSON-RPC) ←→ Zabbix 6.0
@@ -30,7 +32,7 @@ Telegram ←→ Bot API ←→ этот бот (Python, aiogram 3) ←→ Zabbix
 ## Требования
 
 - Python **3.10+**
-- Zabbix **6.0 LTS** (фронтенд доступен по HTTP/HTTPS с машины, где крутится бот)
+- Zabbix **5.4+** (проверено: 6.0 LTS и 7.2/7.4; фронтенд доступен по HTTP/HTTPS с машины, где крутится бот)
 - Исходящий доступ к `api.telegram.org:443` (long polling — вебхук и белый IP не нужны)
 
 ## Установка
@@ -241,6 +243,8 @@ requirements.txt, .env.example
 
 | Симптом | Причина / решение |
 |---|---|
+| `Invalid parameter "/": unexpected parameter "auth"` | Zabbix 7.2+ не принимает токен в теле запроса — обновите `zabbix_api.py` (бот уже переведён на `Authorization: Bearer`) |
+| `ModuleNotFoundError: aiohttp` у check_proxy | Проверка запущена не тем python: используйте `.venv/bin/python check_proxy.py` (или `pip3 install -r requirements.txt`) |
 | Бот молчит, в логах `ClientConnectorError` / таймауты | Нет доступа к `api.telegram.org` — задайте `TG_PROXY_URL` (проверка: `python check_proxy.py`) |
 | `ProxyConnectionError: Couldn't connect to proxy` | Прокси мёртв или указан не тот тип/порт — см. curl-проверку выше |
 | `host.get: доступно узлов — 0` | У группы пользователя `telegram-bot` нет прав на группы узлов: Administration → User groups → Permissions → Host group permissions → Add → **Read-write** (для групп шаблонов достаточно Read) |

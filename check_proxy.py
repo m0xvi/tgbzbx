@@ -14,7 +14,13 @@ import asyncio
 import re
 import sys
 
-import aiohttp
+try:
+    import aiohttp
+except ImportError:
+    print("✘ Не установлен aiohttp — зависимости бота не доступны этому python.")
+    print("  Если ставили через install.sh:  .venv/bin/python check_proxy.py")
+    print("  Если системным python:           pip3 install -r requirements.txt")
+    sys.exit(1)
 
 from config import config
 from zabbix_api import ZabbixAPI, ZabbixAPIError
@@ -121,10 +127,17 @@ def check_zabbix() -> bool:
     print(f"  {PASS} Вход выполнен (user.login)")
 
     try:
+        version = zbx.get_api_version()
+        print(f"  {PASS} Версия Zabbix API: {version}")
+    except Exception:
+        pass
+
+    try:
         hosts = zbx.get_hosts()
         print(f"  {PASS} host.get: доступно узлов — {len(hosts)}")
         if not hosts:
             print(f"      {WARN} прав на группы узлов у пользователя нет — создание тоже не сработает")
+            print(f"      Administration → User groups → Permissions → Host group permissions → Read-write")
         return True
     except Exception as e:
         print(f"  {WARN} host.get не прошёл: {str(e)[:160]}")
@@ -161,9 +174,9 @@ async def main() -> int:
 
     print("\n" + "═" * 46)
     if ok:
-        print(f"{PASS} Всё готово — запускайте:  python bot.py")
+        print(f"{PASS} Всё готово — запускайте:  {sys.executable} bot.py")
         return 0
-    print(f"{FAIL} Есть проблемы — исправьте и повторите:  python check_proxy.py")
+    print(f"{FAIL} Есть проблемы — исправьте и повторите:  {sys.executable} check_proxy.py")
     return 1
 
 
